@@ -1,4 +1,4 @@
-FROM --platform=linux/amd64 python:3.11-slim
+FROM --platform=linux/amd64 python:3.11-slim@sha256:b7a9e5f6a93d6d4a31f129bbd4bdee69efccb6ded0fb230d78aafaf37af98377
 
 WORKDIR /app
 
@@ -13,8 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fontconfig \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements.lock.txt ./
+RUN pip install --no-cache-dir -r requirements.lock.txt && pip check
 
 # If you add dependencies for your own resize() approach, add them to
 # requirements.txt above — everything needed must install at BUILD time.

@@ -28,7 +28,7 @@ LOGGER = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "brand_kit" / "assets"
 MODEL = "qwen3-vl:4b-instruct-q4_K_M"
-PROMPT_VERSION = "layout-v1"
+PROMPT_VERSION = "layout-v2"
 
 
 def _scale_element(element: dict[str, Any], scale: float) -> None:
@@ -495,7 +495,24 @@ def _assess(source: dict[str, Any], design: dict[str, Any], graph: dict[str, Any
                 continue
             if _overlap(_visible_bounds(a), _visible_bounds(b)) > 1:
                 defects.append("collision:" + a["id"] + ":" + b["id"])
-    return dict(structural=structural, defects=defects)
+    readability = []
+    for node in graph["nodes"]:
+        for old in node["members"]:
+            e = indexed.get(old["id"], {})
+            if old["type"] == "text" and old["content"] and e.get("font_size", 0) < _readable_size(old, node["role"], graph):
+                readability.append("small text:" + old["id"])
+    return dict(structural=structural, defects=defects, readability=readability)
+
+
+def _readable_size(element: dict[str, Any], role: str, graph: dict[str, Any]) -> float:
+    """Engineering readability targets in output pixels, not official rules."""
+    largest = max((e["font_size"] for n in graph["nodes"] for e in n["members"]
+                   if e["type"] == "text"), default=1)
+    if role == "primary":
+        return 18.0
+    if element["font_size"] <= largest * .35:
+        return 8.0
+    return 12.0 if role in {"badge", "action"} else 11.0
 
 
 def _measure(element: dict[str, Any], size: float) -> tuple[float, float]:
@@ -696,6 +713,12 @@ def _compose(source: dict[str, Any], target: dict[str, Any], graph: dict[str, An
             first_h, second_h = (visual_h, copy_h) if family == 0 else (copy_h, visual_h)
             pack(first, (margin, margin, available_w, first_h))
             pack(second, (margin, margin + first_h + gap, available_w, second_h))
+    return _finish_layout(source, target, graph, placed)
+
+
+def _finish_layout(source: dict[str, Any], target: dict[str, Any], graph: dict[str, Any],
+                   placed: list[dict[str, Any]]) -> dict[str, Any]:
+    width, height = target["width"], target["height"]
     indexed = {e["id"]: e for e in placed}
     baseline = _preserve_composition(source, target)
     baseline_by_id = {e["id"]: e for e in baseline["elements"]}
@@ -728,51 +751,269 @@ def _compose(source: dict[str, Any], target: dict[str, Any], graph: dict[str, An
     return dict(canvas=deepcopy(target), elements=[indexed[e["id"]] for e in source["elements"]])
 
 
-@lru_cache(maxsize=128)
-def _background_samples(asset_id: str) -> Any:
-    from PIL import Image
+def _hint_order(nodes: list[dict[str, Any]], graph: dict[str, Any]) -> list[dict[str, Any]]:
+    """Stable topological order; reject contradictory model edges individually."""
+    indices = {id(n): i for i, n in enumerate(graph["nodes"])}
+    present = {indices[id(n)]: n for n in nodes}
+    edges: dict[int, set[int]] = {i: set() for i in present}
+    for hint in graph["edges"]:
+        if hint["kind"] != "vlm_hint" or hint["relation"] != "reading_order":
+            continue
+        a, b = hint["first"], hint["second"]
+        if a not in present or b not in present:
+            continue
+        pending, visited = [b], set()
+        while pending:
+            current = pending.pop()
+            if current not in visited:
+                visited.add(current)
+                pending.extend(edges[current])
+        if a not in visited:
+            edges[a].add(b)
+    result, remaining = [], list(present)
+    while remaining:
+        ready = next(i for i in remaining if not any(i in edges[j] for j in remaining))
+        result.append(present[ready])
+        remaining.remove(ready)
+    return result
 
+
+def _flow_item(node: dict[str, Any], width: float, height: float, short: float,
+               factor: float, graph: dict[str, Any]) -> tuple[list[dict[str, Any]], float, float]:
+    """Measure a reflowable unit at a common readability factor."""
+    texts = [e for e in node["members"] if e["type"] == "text"]
+    if node["simple"] or (len(node["members"]) == 1 and texts):
+        adapted = deepcopy(node)
+        for e in adapted["members"]:
+            if e["type"] == "text":
+                original = e["font_size"]
+                desired = max(_readable_size(e, node["role"], graph),
+                              min(original * 1.5, short * (.14 if node["role"] == "primary" else .055)))
+                e["font_size"] = max(1.0, desired * factor)
+                if "letter_spacing" in e:
+                    e["letter_spacing"] *= e["font_size"] / original
+        return _layout_node(adapted, width, 0, 1.0, 1.0, height)
+    members = deepcopy(node["members"])
+    l, t, r, b = _bounds(members, rotated=True)
+    scale = min(width / max(1e-9, r - l), height / max(1e-9, b - t))
+    if texts:
+        desired = max(_readable_size(e, node["role"], graph) / e["font_size"] for e in texts)
+        scale = min(scale, desired * factor)
+    for e in members:
+        e["x"] -= l
+        e["y"] -= t
+        _scale_element(e, scale)
+        if e["type"] == "text":
+            _fit_text(e)
+    return members, (r - l) * scale, (b - t) * scale
+
+
+def _flow_pack(nodes: list[dict[str, Any]], rect: tuple[float, ...], short: float,
+               gap: float, graph: dict[str, Any], text_factor: float = 1.0) -> list[dict[str, Any]]:
+    """Find row breaks with dynamic programming, then fit typography to the region."""
+    if not nodes:
+        return []
+    x, y, width, height = rect
+    nodes = _hint_order(nodes, graph)
+    gap = min(gap, height / max(2, len(nodes) * 2))
+
+    def arrange(factor: float) -> tuple[float, list[Any]]:
+        best: list[tuple[float, list[Any]]] = [(0.0, [])] + [(float("inf"), []) for _ in nodes]
+        for end in range(1, len(nodes) + 1):
+            for count in range(1, min(end, 4) + 1):
+                row = nodes[end - count:end]
+                # Long copy gets full-width rows. Short labels and image units can share.
+                if count > 1 and any(len(n["members"]) == 1 and n["members"][0]["type"] == "text" for n in row):
+                    continue
+                weights = []
+                for n in row:
+                    text = [e for e in n["members"] if e["type"] == "text"]
+                    weights.append(max(1.0, sum(len(e["content"]) for e in text)) if text else
+                                   max(1.0, (n["bounds"][2] - n["bounds"][0]) / max(1, n["bounds"][3] - n["bounds"][1]) * 12))
+                available = max(.01, width - gap * (count - 1))
+                cells = [_flow_item(n, available * weight / sum(weights), height, short, factor, graph)
+                         for n, weight in zip(row, weights)]
+                # Do not make a row look cheap by shrinking a rotated label into illegibility.
+                if count > 1 and any(e["type"] == "text" and
+                        e["font_size"] + .01 < min(old["font_size"], _readable_size(old, n["role"], graph)) * factor * .9
+                        for n, cell in zip(row, cells) for e, old in zip(cell[0], n["members"])):
+                    continue
+                rh = max(cell[2] for cell in cells)
+                cost = best[end - count][0] + rh + (gap if end > count else 0)
+                if cost < best[end][0]:
+                    best[end] = (cost, best[end - count][1] + [(cells, [available * w / sum(weights) for w in weights], rh)])
+        return best[-1]
+
+    total, rows = arrange(text_factor)
+    if total > height:
+        low, high = .04, text_factor
+        for _ in range(10):
+            mid = (low + high) / 2
+            if arrange(mid)[0] <= height:
+                low = mid
+            else:
+                high = mid
+        total, rows = arrange(low)
+    shrink = min(1.0, height / max(total, 1e-9))
+    cursor, placed = y + max(0.0, height - total) / 2, []
+    for cells, widths, rh in rows:
+        offset = x
+        for (members, used_w, used_h), cell_w in zip(cells, widths):
+            for e in members:
+                _scale_element(e, shrink)
+                e["x"] += offset + max(0, cell_w - used_w * shrink) / 2
+                e["y"] += cursor + max(0, rh - used_h) * shrink / 2
+                placed.append(e)
+            offset += cell_w + gap
+        cursor += (rh + gap) * shrink
+    return placed
+
+
+def _visual_pack(nodes: list[dict[str, Any]], rect: tuple[float, ...], gap: float) -> list[dict[str, Any]]:
+    """Give images space in proportion to source prominence, preserving their pixels."""
+    if not nodes:
+        return []
+    x, y, w, h = rect
+    weights = [sqrt(max(1, (n["bounds"][2] - n["bounds"][0]) * (n["bounds"][3] - n["bounds"][1]))) for n in nodes]
+    gap = min(gap, h / max(2, len(nodes) * 2))
+    available, result = max(.01, h - gap * (len(nodes) - 1)), []
+    for node, weight in zip(nodes, weights):
+        l, t, r, b = _bounds(node["members"], rotated=True)
+        allocation = available * weight / sum(weights)
+        scale = min(w / max(1e-9, r - l), allocation / max(1e-9, b - t))
+        for e in deepcopy(node["members"]):
+            e["x"] -= l
+            e["y"] -= t
+            _scale_element(e, scale)
+            e["x"] += x + (w - (r - l) * scale) / 2
+            e["y"] += y + (allocation - (b - t) * scale) / 2
+            result.append(e)
+        y += allocation + gap
+    return result
+
+
+def _flex_compose(source: dict[str, Any], target: dict[str, Any], graph: dict[str, Any],
+                  family: int, params: dict[str, float]) -> dict[str, Any]:
+    w, h = target["width"], target["height"]
+    short = min(w, h)
+    margin, gap = short * params["margin"], short * params["gap"]
+    aw, ah = max(.01, w - margin * 2), max(.01, h - margin * 2)
+    visual = [n for n in graph["nodes"] if not any(e["type"] == "text" for e in n["members"])]
+    copy = [n for n in graph["nodes"] if len(n["members"]) == 1 and n["members"][0]["type"] == "text"]
+    controls = [n for n in graph["nodes"] if n not in visual and n not in copy]
+    placed: list[dict[str, Any]] = []
+
+    def pack(nodes: list[dict[str, Any]], rect: tuple[float, ...]) -> None:
+        placed.extend(_flow_pack(nodes, rect, short, gap, graph, params.get("text", 1.0)))
+
+    if w >= h:
+        vw = min(aw * params["visual"], ah * (1.4 if family == 5 else .95)) if visual else 0
+        placed.extend(_visual_pack(_hint_order(visual, graph), (margin, margin, vw, ah), gap))
+        start = margin + vw + (gap if visual else 0)
+        remaining = max(.01, w - margin - start)
+        if family == 4 and controls:
+            footer = ah * params.get("rail", .3)
+            pack(copy, (start, margin, remaining, max(.01, ah - footer - gap)))
+            pack(controls, (start, h - margin - footer, remaining, footer))
+        else:
+            rail = remaining * params.get("rail", .27) if controls else 0
+            pack(copy, (start, margin, max(.01, remaining - rail - (gap if controls else 0)), ah))
+            pack(controls, (w - margin - rail, margin, rail, ah))
+    else:
+        vh = ah * params["visual"] if visual else 0
+        pack(visual, (margin, margin, aw, vh))
+        start = margin + vh + (gap if visual else 0)
+        remaining = max(.01, h - margin - start)
+        footer = remaining * params.get("rail", .3) if controls else 0
+        pack(copy, (margin, start, aw, max(.01, remaining - footer - (gap if controls else 0))))
+        pack(controls, (margin, h - margin - footer, aw, footer))
+    return _finish_layout(source, target, graph, placed)
+
+
+@lru_cache(maxsize=128)
+def _asset_samples(asset_id: str) -> Any:
+    from PIL import Image
     path = ASSETS / asset_id
     if not path.is_file():
         return None
     with Image.open(path) as image:
-        return image.convert("RGB").resize((32, 32))
+        return image.size, image.convert("RGBA").resize((64, 64))
+
+
+def _layer_pixel(element: dict[str, Any], x: float, y: float) -> tuple[float, ...] | None:
+    """Sample original assets with the renderer's fit, rotation and opacity semantics."""
+    from renderer.converter.colorutil import parse_rgba
+    w, h = element["width"], element["height"]
+    if w <= 0 or h <= 0:
+        return None
+    dx, dy = x - element["x"] - w / 2, y - element["y"] - h / 2
+    angle = radians(-element.get("rotation", 0))
+    px, py = cos(angle) * dx - sin(angle) * dy + w / 2, sin(angle) * dx + cos(angle) * dy + h / 2
+    if not (0 <= px <= w and 0 <= py <= h):
+        return None
+    if element["type"] == "shape":
+        if element.get("shape_type") == "ellipse" and ((px - w / 2) / (w / 2)) ** 2 + ((py - h / 2) / (h / 2)) ** 2 > 1:
+            return None
+        radius = min(element.get("corner_radius", 0), w / 2, h / 2)
+        if radius > 0:
+            cx, cy = min(w - radius, max(radius, px)), min(h - radius, max(radius, py))
+            if (px - cx) ** 2 + (py - cy) ** 2 > radius ** 2:
+                return None
+        rgba = parse_rgba(element.get("fill_color"))
+    elif element["type"] == "image":
+        asset = _asset_samples(element["asset_id"])
+        if asset is None:
+            return (214, 214, 214, element.get("opacity", 1))
+        (iw, ih), samples = asset
+        fit = element.get("fit", "contain")
+        if fit in {"cover", "contain"}:
+            scale = (max if fit == "cover" else min)(w / iw, h / ih)
+            u, v = (px - (w - iw * scale) / 2) / (iw * scale), (py - (h - ih * scale) / 2) / (ih * scale)
+        else:
+            u, v = px / w, py / h
+        if not (0 <= u <= 1 and 0 <= v <= 1):
+            return None
+        r, g, b, a = samples.getpixel((min(63, int(u * 64)), min(63, int(v * 64))))
+        rgba = (r, g, b, a / 255)
+    else:
+        return None
+    return (*rgba[:3], rgba[3] * element.get("opacity", 1))
 
 
 def _contrast(element: dict[str, Any], design: dict[str, Any], graph: dict[str, Any]) -> float:
+    """Check several positions over the text area against composited lower layers."""
     from renderer.converter.colorutil import parse_rgba
-
-    backdrop = (32, 32, 32)
-    for bg in graph["backgrounds"]:
-        if bg["type"] == "shape":
-            color = parse_rgba(bg["fill_color"])
-            alpha = color[3] * bg.get("opacity", 1)
-            backdrop = tuple(alpha * color[i] + (1 - alpha) * backdrop[i] for i in range(3))
-            continue
-        samples = _background_samples(bg["asset_id"])
-        if samples is not None:
-            x = min(31, max(0, round((element["x"] + element["width"] / 2) / design["canvas"]["width"] * 31)))
-            y = min(31, max(0, round((element["y"] + element["height"] / 2) / design["canvas"]["height"] * 31)))
-            backdrop = samples.getpixel((x, y))
-    for shape in sorted(design["elements"], key=lambda e: e.get("z_index", 0)):
-        if (shape["type"] == "shape" and shape.get("z_index", 0) < element.get("z_index", 0)
-                and _inside(element, shape)):
-            rgba = parse_rgba(shape["fill_color"])
-            alpha = rgba[3] * shape.get("opacity", 1)
-            backdrop = tuple(alpha * rgba[i] + (1 - alpha) * backdrop[i] for i in range(3))
     def luminance(rgb: tuple[float, ...]) -> float:
         values = [v / 255 for v in rgb]
         return sum(weight * (v / 12.92 if v <= .04045 else ((v + .055) / 1.055) ** 2.4)
                    for v, weight in zip(values, (.2126, .7152, .0722)))
-    contrasts = []
     colors = [element["color"]] + [r["color"] for r in element.get("style_runs", []) if "color" in r]
-    for value in colors:
-        color = parse_rgba(value)
-        alpha = color[3] * element.get("opacity", 1)
-        foreground = tuple(alpha * color[i] + (1 - alpha) * backdrop[i] for i in range(3))
-        a, b = luminance(foreground), luminance(backdrop)
-        contrasts.append(min(1.0, ((max(a, b) + .05) / (min(a, b) + .05)) / 4.5))
-    return min(contrasts)
+    layers = sorted(design["elements"], key=lambda e: e.get("z_index", 0))
+    lower = layers[:next(i for i, e in enumerate(layers) if e["id"] == element["id"])]
+    contrasts = []
+    measured_w, measured_h = _measure(element, element["font_size"])
+    tw, th = min(element["width"], measured_w), min(element["height"], measured_h)
+    align = element.get("text_align", "left")
+    offset = 0 if align == "left" else (element["width"] - tw) * (.5 if align == "center" else 1)
+    angle = radians(element.get("rotation", 0))
+    for fx in (.1, .5, .9):
+        for fy in (.15, .5, .85):
+            dx, dy = offset + fx * tw - element["width"] / 2, fy * th - element["height"] / 2
+            x = element["x"] + element["width"] / 2 + cos(angle) * dx - sin(angle) * dy
+            y = element["y"] + element["height"] / 2 + sin(angle) * dx + cos(angle) * dy
+            backdrop = (255., 255., 255.)
+            for layer in lower:
+                rgba = _layer_pixel(layer, x, y)
+                if rgba:
+                    backdrop = tuple(rgba[3] * rgba[i] + (1 - rgba[3]) * backdrop[i] for i in range(3))
+            for value in colors:
+                color = parse_rgba(value)
+                alpha = color[3] * element.get("opacity", 1)
+                foreground = tuple(alpha * color[i] + (1 - alpha) * backdrop[i] for i in range(3))
+                a, b = luminance(foreground), luminance(backdrop)
+                contrasts.append(min(1., ((max(a, b) + .05) / (min(a, b) + .05)) / 4.5))
+    contrasts.sort()
+    return contrasts[len(contrasts) // 5] if contrasts else 1.0
 
 
 def _score(source: dict[str, Any], design: dict[str, Any], graph: dict[str, Any]) -> dict[str, float]:
@@ -786,8 +1027,9 @@ def _score(source: dict[str, Any], design: dict[str, Any], graph: dict[str, Any]
             e = indexed[old["id"]]
             l, t, r, b = _visible_bounds(e)
             if e["type"] == "text":
-                target_size = short * (.12 if node["role"] == "primary" else .05)
-                readability.append(min(1.0, e["font_size"] / max(1, target_size)) * _contrast(e, design, graph))
+                target_size = max(_readable_size(old, node["role"], graph),
+                                  short * (.12 if node["role"] == "primary" else .05))
+                readability.append(min(1.0, e["font_size"] / target_size) ** 2 * _contrast(e, design, graph))
                 sizes.append((node["role"], old["font_size"], e["font_size"]))
                 area += e["width"] * min(e["height"], _measure(e, e["font_size"])[1])
             else:
@@ -813,10 +1055,38 @@ def _score(source: dict[str, Any], design: dict[str, Any], graph: dict[str, Any]
         total += 1
     alignment = matched / total if total else 1.0
     occupancy = min(1.0, area / max(1, design["canvas"]["width"] * design["canvas"]["height"] * .4))
-    read = sum(readability) / max(1, len(readability)) if readability else 1.0
-    result = dict(readability=read, hierarchy=hierarchy, alignment=alignment, occupancy=occupancy)
-    result["total"] = .4 * read + .25 * hierarchy + .2 * alignment + .15 * occupancy
+    read = (.75 * sum(readability) / len(readability) + .25 * min(readability)) if readability else 1.0
+    relations = _relationship_score(design, graph)
+    result = dict(readability=read, hierarchy=hierarchy, alignment=alignment, occupancy=occupancy,
+                  relationships=relations)
+    result["total"] = .5 * read + .2 * hierarchy + .1 * alignment + .1 * occupancy + .1 * relations
     return result
+
+
+def _relationship_score(design: dict[str, Any], graph: dict[str, Any]) -> float:
+    indexed = {e["id"]: e for e in design["elements"]}
+    scores = []
+    short = min(design["canvas"].values())
+    for hint in graph["edges"]:
+        if hint["kind"] != "vlm_hint":
+            continue
+        first, second = (graph["nodes"][hint[k]] for k in ("first", "second"))
+        a = _bounds([indexed[e["id"]] for e in first["members"]])
+        b = _bounds([indexed[e["id"]] for e in second["members"]])
+        if hint["relation"] == "alignment":
+            delta = min(abs(a[axis] + f * (a[axis + 2] - a[axis]) -
+                            b[axis] - f * (b[axis + 2] - b[axis]))
+                        for axis in (0, 1) for f in (0, .5, 1))
+            scores.append(max(0.0, 1 - delta / max(1, short * .08)))
+        elif hint["relation"] == "reading_order":
+            same_row = min(a[3], b[3]) > max(a[1], b[1])
+            scores.append(float(a[0] <= b[0] if same_row else a[1] <= b[1]))
+        elif hint["relation"] == "layering":
+            # Model hints may preserve existing overlap, never invent a new occlusion.
+            original = _overlap(first["bounds"], second["bounds"])
+            if original > 0:
+                scores.append(float(_overlap(a, b) > 0))
+    return sum(scores) / len(scores) if scores else 1.0
 
 
 def _candidate(source: dict[str, Any], design: dict[str, Any], graph: dict[str, Any],
@@ -841,6 +1111,11 @@ def _search(source: dict[str, Any], target: dict[str, Any], graph: dict[str, Any
     for family in range(3):
         for index, params in enumerate(parameters):
             design = _compose(source, target, graph, family, params)
+            candidates.append(_candidate(source, design, graph, f"family-{family}-{index}", family, params))
+    for family in range(3, 6):
+        for index, rail in enumerate((.18, .27, .36)):
+            params = dict(margin=.025, gap=.018, visual=.3, text=1.0, rail=rail)
+            design = _flex_compose(source, target, graph, family, params)
             candidates.append(_candidate(source, design, graph, f"family-{family}-{index}", family, params))
     return candidates
 
@@ -957,7 +1232,7 @@ _JUDGE_SCHEMA = dict(type="object", additionalProperties=False, required=["ranki
                 issue=dict(type="string", enum=["headline_small", "product_dominates", "cta_disconnected", "spacing", "balance"]),
                 parameter=dict(type="string", enum=["visual", "margin", "gap", "text"]),
                 delta=dict(type="number", minimum=-.2, maximum=.2))))))
-_PARAMETER_LIMITS = {"visual": (.25, .45), "margin": (.03, .06), "gap": (.02, .04), "text": (.85, 1.15)}
+_PARAMETER_LIMITS = {"visual": (.12, .45), "margin": (.015, .06), "gap": (.01, .04), "text": (.7, 1.3)}
 
 
 def _image_input(path: Path) -> str:
@@ -1072,11 +1347,12 @@ def _finalists(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not valid:
         return sorted(eligible, key=_candidate_key)[:4]
     result = []
-    for family in range(3):
+    for family in sorted({c["family"] for c in valid}):
         options = [c for c in valid if c["family"] == family]
         if options:
             result.append(min(options, key=_candidate_key))
     remainder = sorted([c for c in valid if all(c is not r for r in result)], key=_candidate_key)
+    result = sorted(result, key=_candidate_key)[:4]
     result.extend(remainder[:4 - len(result)])
     return sorted(result, key=_candidate_key)
 
@@ -1092,10 +1368,11 @@ def _revisions(source: dict[str, Any], target: dict[str, Any], graph: dict[str, 
                incumbent: dict[str, Any], issues: list[dict[str, Any]],
                round_number: int, seen: set[str]) -> list[dict[str, Any]]:
     applicable = [i for i in issues if i["candidate"] == incumbent["name"]]
-    if not applicable or incumbent["family"] < 0:
+    if not applicable:
         return []
     results = []
-    for index, edits in enumerate([applicable[:1], applicable]):
+    parameter_edits = [applicable[:1], applicable] if incumbent["family"] >= 0 else []
+    for index, edits in enumerate(parameter_edits):
         params = dict(incumbent["params"])
         for edit in edits:
             key = edit["parameter"]
@@ -1103,7 +1380,8 @@ def _revisions(source: dict[str, Any], target: dict[str, Any], graph: dict[str, 
             # Two different step sizes also provide alternatives for one critique.
             multiplier = .5 if index == 0 else 1.0
             params[key] = min(high, max(low, params[key] + edit["delta"] * multiplier))
-        design = _compose(source, target, graph, incumbent["family"], params)
+        composer = _flex_compose if incumbent["family"] >= 3 else _compose
+        design = composer(source, target, graph, incumbent["family"], params)
         fingerprint = _fingerprint(design)
         if fingerprint in seen:
             continue
@@ -1111,7 +1389,19 @@ def _revisions(source: dict[str, Any], target: dict[str, Any], graph: dict[str, 
         candidate = _candidate(source, design, graph, f"revision-{round_number}-{index}", incumbent["family"], params)
         if not candidate["assessment"]["structural"] and not candidate["assessment"]["defects"]:
             results.append(candidate)
-    return results
+    # A critique can also explore a different structure, not only tweak spacing.
+    for family in (3, 4, 5):
+        if not applicable or family == incumbent["family"]:
+            continue
+        params = dict(margin=.025, gap=.018, visual=.3, text=1.0, rail=.27)
+        design = _flex_compose(source, target, graph, family, params)
+        fingerprint = _fingerprint(design)
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            candidate = _candidate(source, design, graph, f"revision-{round_number}-family-{family}", family, params)
+            if not candidate["assessment"]["structural"] and not candidate["assessment"]["defects"]:
+                results.append(candidate)
+    return sorted(results, key=_candidate_key)[:3]
 
 
 def _run_layout(source: dict[str, Any], target: dict[str, Any], directory: Path | None = None,
@@ -1221,6 +1511,8 @@ def _run_layout(source: dict[str, Any], target: dict[str, Any], directory: Path 
                   seconds=round(time.monotonic() - started, 3))
     if best["assessment"]["defects"]:
         LOGGER.warning("Best bounded layout retains quality limitations: %s", best["assessment"]["defects"])
+    if render and best["assessment"]["readability"]:
+        LOGGER.warning("Readability targets not met: %s", best["assessment"]["readability"])
     if render:
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "report.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -1235,10 +1527,20 @@ def resize(source: dict[str, Any], target_canvas: dict[str, Any]) -> dict[str, A
     local-model failures; required fails visibly. Model installation and
     self-contained offline-container packaging are separate setup work.
     """
+    from engine.validation import schema_problems, validate_output
+    problems = schema_problems(source)
+    if problems:
+        raise ValueError("; ".join(problems))
+    if set(target_canvas) != {"width", "height"}:
+        raise ValueError("Target canvas must contain only width and height")
     for canvas in (source["canvas"], target_canvas):
         if any(type(canvas[k]) is not int or canvas[k] < 1 for k in ("width", "height")):
             raise ValueError("Canvas dimensions must be positive integers")
-    return _run_layout(source, target_canvas)[0]
+    result = _run_layout(source, target_canvas)[0]
+    problems = validate_output(source, result, target_canvas)
+    if problems:
+        raise ValueError("; ".join(problems))
+    return result
 
 
 def _test_source() -> dict[str, Any]:

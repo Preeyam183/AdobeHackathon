@@ -34,7 +34,7 @@ Follow existing Python conventions: four-space indentation, `snake_case` functio
 
 ## Testing Guidelines
 
-There is no automated test suite or coverage threshold. Run all three sample tasks and inspect both JSON and rendered PNGs. Structural warnings do not fail the process and are not full schema validation; investigate them, accounting for the Level 2 decorative bleed. Confirm previews use real fonts and assets rather than fallback boxes. Preserve the intentionally missing Level 3 badge fixture.
+Run `python -m unittest discover -s tests -v` for contract, readability, semantic-hint and batch-error regressions. The generated suite runs with `python -m engine.resize --check-level2-tests output/regression`; its mock VLM server needs localhost socket access. Run all three sample tasks and inspect both JSON and rendered PNGs. Schema or contract failures return a nonzero status, while readability limitations are reported separately. Real rendering is required. Preserve the intentionally missing Level 3 badge fixture.
 
 ## Commit & Pull Request Guidelines
 

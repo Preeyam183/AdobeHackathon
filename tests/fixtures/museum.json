@@ -1,0 +1,155 @@
+{
+  "source": {
+    "canvas": {
+      "width": 900,
+      "height": 1200
+    },
+    "elements": [
+      {
+        "id": "paper",
+        "type": "shape",
+        "x": 0,
+        "y": 0,
+        "width": 900,
+        "height": 1200,
+        "shape_type": "rectangle",
+        "fill_color": "rgba(25,35,55,1)",
+        "z_index": 0
+      },
+      {
+        "id": "title",
+        "type": "text",
+        "content": "A night at the museum",
+        "x": 60,
+        "y": 70,
+        "width": 780,
+        "height": 140,
+        "font_family": "Solstice Sans",
+        "font_size": 64,
+        "color": "rgba(255,255,255,1)",
+        "z_index": 2
+      },
+      {
+        "id": "details",
+        "type": "text",
+        "content": "Discover new exhibitions, meet the artists, and explore after dark.",
+        "x": 60,
+        "y": 240,
+        "width": 780,
+        "height": 180,
+        "font_family": "Solstice Sans",
+        "font_size": 30,
+        "color": "rgba(255,255,255,1)",
+        "z_index": 2
+      },
+      {
+        "id": "schedule",
+        "type": "text",
+        "content": "Friday 18:00 to 22:00. All ages welcome.",
+        "x": 60,
+        "y": 450,
+        "width": 780,
+        "height": 100,
+        "font_family": "Solstice Sans",
+        "font_size": 24,
+        "color": "rgba(255,255,255,1)",
+        "z_index": 2
+      },
+      {
+        "id": "access",
+        "type": "text",
+        "content": "Accessible entrance on Garden Street.",
+        "x": 60,
+        "y": 1080,
+        "width": 780,
+        "height": 60,
+        "font_family": "Solstice Sans",
+        "font_size": 18,
+        "color": "rgba(255,255,255,1)",
+        "z_index": 2
+      },
+      {
+        "id": "card-0",
+        "type": "shape",
+        "x": 60,
+        "y": 800,
+        "width": 240,
+        "height": 100,
+        "shape_type": "rectangle",
+        "fill_color": "rgba(70,90,130,1)",
+        "group_id": "g0",
+        "z_index": 1
+      },
+      {
+        "id": "label-0",
+        "type": "text",
+        "content": "BOOK TICKETS",
+        "x": 70,
+        "y": 820,
+        "width": 220,
+        "height": 60,
+        "font_family": "Solstice Sans",
+        "font_size": 22,
+        "color": "rgba(255,255,255,1)",
+        "z_index": 2,
+        "group_id": "g0"
+      },
+      {
+        "id": "card-1",
+        "type": "shape",
+        "x": 320,
+        "y": 800,
+        "width": 240,
+        "height": 100,
+        "shape_type": "rectangle",
+        "fill_color": "rgba(70,90,130,1)",
+        "group_id": "g1",
+        "z_index": 1
+      },
+      {
+        "id": "label-1",
+        "type": "text",
+        "content": "FREE TO MEMBERS",
+        "x": 330,
+        "y": 820,
+        "width": 220,
+        "height": 60,
+        "font_family": "Solstice Sans",
+        "font_size": 22,
+        "color": "rgba(255,255,255,1)",
+        "z_index": 2,
+        "group_id": "g1"
+      },
+      {
+        "id": "card-2",
+        "type": "shape",
+        "x": 580,
+        "y": 800,
+        "width": 240,
+        "height": 100,
+        "shape_type": "rectangle",
+        "fill_color": "rgba(70,90,130,1)",
+        "group_id": "g2",
+        "z_index": 1
+      },
+      {
+        "id": "label-2",
+        "type": "text",
+        "content": "GUIDED TOURS",
+        "x": 590,
+        "y": 820,
+        "width": 220,
+        "height": 60,
+        "font_family": "Solstice Sans",
+        "font_size": 22,
+        "color": "rgba(255,255,255,1)",
+        "z_index": 2,
+        "group_id": "g2"
+      }
+    ]
+  },
+  "target_canvas": {
+    "width": 1200,
+    "height": 300
+  }
+}
