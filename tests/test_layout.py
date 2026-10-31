@@ -26,10 +26,26 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(validate_output(saved, result, task["target_canvas"]), [])
         self.assertEqual(task["source"], saved)
         fonts = {e["id"]: e["font_size"] for e in result["elements"] if e["type"] == "text"}
-        self.assertGreaterEqual(fonts["headline"], 10)
-        self.assertGreaterEqual(fonts["subhead"], 6)
-        self.assertGreaterEqual(fonts["legal_text"], 4)
+        self.assertGreaterEqual(fonts["headline"], 11.5)
+        self.assertGreaterEqual(fonts["subhead"], 8)
+        self.assertGreaterEqual(fonts["legal_text"], 8)
+        self.assertGreaterEqual(min(fonts[k] for k in ("badge1_label", "badge2_label", "badge3_label", "cta_label")), 8)
+        self.assertEqual(report["assessment"]["defects"], [])
         self.assertTrue(report["assessment"]["readability"], "Residual tiny text must be reported")
+
+    def test_banner_layout_does_not_depend_on_element_names(self):
+        task = json.loads((ROOT / "input/chameleon_sample_level3_advanced.json").read_text())
+        source = deepcopy(task["source"])
+        expected, _ = _run_layout(source, task["target_canvas"], render=False)
+        mapping = {e["id"]: f"item-{i}" for i, e in enumerate(source["elements"])}
+        for e in source["elements"]:
+            e["id"] = mapping[e["id"]]
+        source["elements"].reverse()
+        actual, _ = _run_layout(source, task["target_canvas"], render=False)
+        self.assertEqual(validate_output(source, actual, task["target_canvas"]), [])
+        indexed = {e["id"]: e for e in actual["elements"]}
+        for e in expected["elements"]:
+            self.assertEqual(dict(e, id=mapping[e["id"]]), indexed[mapping[e["id"]]])
 
     def test_independent_composition_across_formats(self):
         source = independent_poster()

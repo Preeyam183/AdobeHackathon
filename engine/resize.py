@@ -551,7 +551,8 @@ def _preferred_size(element: dict[str, Any], role: str, short: float, scale: flo
 
 
 def _layout_node(node: dict[str, Any], width: float, short: float, scale: float,
-                 text_factor: float, image_height: float) -> tuple[list[dict[str, Any]], float, float]:
+                 text_factor: float, image_height: float,
+                 padding_ratio: float = .55) -> tuple[list[dict[str, Any]], float, float]:
     members = deepcopy(node["members"])
     left, top, right, bottom = node["bounds"]
     sw, sh = max(1e-9, right - left), max(1e-9, bottom - top)
@@ -572,7 +573,7 @@ def _layout_node(node: dict[str, Any], width: float, short: float, scale: float,
         text["font_size"] = _preferred_size(text, node["role"], short, scale, text_factor)
         if "letter_spacing" in text:
             text["letter_spacing"] *= text["font_size"] / original_size
-        padding = max(2.0, text["font_size"] * .55)
+        padding = max(2.0 * padding_ratio / .55, text["font_size"] * padding_ratio)
         text.update(x=padding, y=padding, width=max(0.0, width - padding * 2))
         natural = deepcopy(text)
         natural["width"] = 1e9
@@ -789,10 +790,13 @@ def _flow_item(node: dict[str, Any], width: float, height: float, short: float,
                 original = e["font_size"]
                 desired = max(_readable_size(e, node["role"], graph),
                               min(original * 1.5, short * (.14 if node["role"] == "primary" else .055)))
+                if node["role"] == "supporting" and _readable_size(e, node["role"], graph) > 8:
+                    desired *= graph.get("supporting_factor", 1.0)
                 e["font_size"] = max(1.0, desired * factor)
                 if "letter_spacing" in e:
                     e["letter_spacing"] *= e["font_size"] / original
-        return _layout_node(adapted, width, 0, 1.0, 1.0, height)
+        return _layout_node(adapted, width, 0, 1.0, 1.0, height,
+                            graph.get("control_padding", .55))
     members = deepcopy(node["members"])
     l, t, r, b = _bounds(members, rotated=True)
     scale = min(width / max(1e-9, r - l), height / max(1e-9, b - t))
@@ -895,6 +899,8 @@ def _visual_pack(nodes: list[dict[str, Any]], rect: tuple[float, ...], gap: floa
 def _flex_compose(source: dict[str, Any], target: dict[str, Any], graph: dict[str, Any],
                   family: int, params: dict[str, float]) -> dict[str, Any]:
     w, h = target["width"], target["height"]
+    if family == 6:
+        graph = dict(graph, control_padding=.25, supporting_factor=1.15)
     short = min(w, h)
     margin, gap = short * params["margin"], short * params["gap"]
     aw, ah = max(.01, w - margin * 2), max(.01, h - margin * 2)
@@ -911,7 +917,20 @@ def _flex_compose(source: dict[str, Any], target: dict[str, Any], graph: dict[st
         placed.extend(_visual_pack(_hint_order(visual, graph), (margin, margin, vw, ah), gap))
         start = margin + vw + (gap if visual else 0)
         remaining = max(.01, w - margin - start)
-        if family == 4 and controls:
+        if family == 6 and copy:
+            # Small supporting copy gets a full-width footnote row instead of
+            # competing with the headline for the same narrow column.
+            primary_size = max(n["size"] for n in copy)
+            footnotes = [n for n in copy if n["role"] != "primary" and n["size"] <= primary_size * .35]
+            body = [n for n in copy if n not in footnotes]
+            footer = sum(_flow_item(n, remaining, ah, short, 1.0, graph)[2] for n in footnotes)
+            footer = min(ah * .35, footer + gap * max(0, len(footnotes) - 1))
+            body_height = max(.01, ah - footer - (gap if footnotes else 0))
+            rail = remaining * params.get("rail", .27) if controls else 0
+            pack(body, (start, margin, max(.01, remaining - rail - (gap if controls else 0)), body_height))
+            pack(controls, (w - margin - rail, margin, rail, body_height))
+            pack(footnotes, (start, h - margin - footer, remaining, footer))
+        elif family == 4 and controls:
             footer = ah * params.get("rail", .3)
             pack(copy, (start, margin, remaining, max(.01, ah - footer - gap)))
             pack(controls, (start, h - margin - footer, remaining, footer))
@@ -1117,6 +1136,12 @@ def _search(source: dict[str, Any], target: dict[str, Any], graph: dict[str, Any
             params = dict(margin=.025, gap=.018, visual=.3, text=1.0, rail=rail)
             design = _flex_compose(source, target, graph, family, params)
             candidates.append(_candidate(source, design, graph, f"family-{family}-{index}", family, params))
+    if target["width"] >= 4 * target["height"]:
+        for visual_index, visual in enumerate((.055, .09, .3)):
+            for index, rail in enumerate((.24, .30, .36, .40, .44)):
+                params = dict(margin=.015, gap=.012, visual=visual, text=1.0, rail=rail)
+                design = _flex_compose(source, target, graph, 6, params)
+                candidates.append(_candidate(source, design, graph, f"family-6-{visual_index}-{index}", 6, params))
     return candidates
 
 

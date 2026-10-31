@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CHAMELEON Viewer</title><link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><p class="eyebrow">CHAMELEON</p><h1>Every format.<br>The same story.</h1><p>Review the engine’s rendered designs at their real size.</p></header>
+  <main>
+    <label class="upload">Open output files<input id="files" type="file" multiple accept=".json,.png"></label>
+    <p class="hint">Choose matching <code>name_output.json</code> and <code>name_output.png</code> files. Files stay in this viewer.</p>
+    <label>Design<select id="designs"><option value="">Choose output files to begin</option></select></label>
+    <p id="status" role="status" aria-live="polite">Ready to review.</p>
+    <section id="review" hidden>
+      <div class="toolbar"><h2 id="title"></h2><button id="zoom" type="button" aria-pressed="false">Actual size</button></div>
+      <div id="viewport"><img id="preview" alt="Engine-rendered output"></div>
+      <p id="dimensions" class="hint"></p>
+      <div class="actions"><button id="insert" disabled>Add to Express</button><a id="download">Download PNG</a><a id="json-download">Download JSON</a></div>
+      <p id="host" class="hint">Connect to Adobe Express to insert a design.</p>
+      <h2>Readability review</h2><p class="hint">Text below 8 px is flagged for inspection. This is a review aid, not an official score or full schema validation.</p>
+      <ul id="warnings"></ul>
+      <details><summary>Text and sizes</summary><table><thead><tr><th>Element</th><th>Size</th><th>Copy</th></tr></thead><tbody id="text-rows"></tbody></table></details>
+      <details><summary>Output JSON</summary><pre id="json"></pre></details>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

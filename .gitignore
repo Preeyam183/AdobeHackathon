@@ -20,3 +20,9 @@ venv/
 # Generated run artifacts
 output/*
 !output/.gitkeep
+
+# Adobe Express viewer build artifacts
+viewer/node_modules/
+viewer/dist/
+viewer/*.zip
+viewer/.ccweb-add-on/

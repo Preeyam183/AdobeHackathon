@@ -1,6 +1,7 @@
 FROM --platform=linux/amd64 python:3.11-slim@sha256:b7a9e5f6a93d6d4a31f129bbd4bdee69efccb6ded0fb230d78aafaf37af98377
 
 WORKDIR /app
+ENV CHAMELEON_VLM=off
 
 # System libs some renderer backends (e.g. skia) need at runtime, plus git
 # (build-time only) so pip can install cr-renderer straight from its repo.

@@ -26,7 +26,8 @@ The engine infers roles and relationships from geometry, typography, stacking
 and explicit groups; it does not use element names as semantic labels. Nearby
 canvas shapes preserve the composition when it fits cleanly. Larger changes
 search 28 initial candidates: the original composition, 18 original reflow
-variants, and 9 flexible variants. Flexible variants allocate space to images,
+variants, and 9 flexible variants. Wide banners also try 15 compact variants
+with a full-width fine-print footer and varied image/control allocations. Flexible variants allocate space to images,
 copy and grouped controls, and use dynamic programming to arrange groups in rows.
 Text is measured with the same fonts and wrapping code as the renderer.
 
@@ -112,12 +113,24 @@ choosing a submission mode.
 ## Current limitations
 
 The 728x90 sample contains far more copy and badges than can comfortably fit.
-The updated layout improves headline/body sizes and reports remaining small
-text, but does not make that sample fully readable. No text is deleted or
+The compact layout raises body copy to about 8.33 px and legal copy to 8 px
+in the tested Linux container, with badges/CTA around 9.02 px. The headline is
+about 11.86 px and the rotated ribbon about 7.57 px. It reports remaining small
+text and does not make that sample fully readable. No text is deleted or
 rewritten to hide the problem. Human comparison across more independent designs
 and real VLM evaluation remain necessary. There is no verified official score.
 
-The challenge PDF places the Express add-on in the finale, while the standalone
-FAQ mentions a stage-one viewer. Confirm that discrepancy with organizers.
+The Express viewer in `viewer/` opens matching output JSON/PNG pairs, supports
+actual-size review and downloads, and inserts the rendered PNG into Express.
+It builds and packages with Adobe’s CLI; actual-host insertion still needs an
+Adobe account smoke test. See [viewer/README.md](viewer/README.md).
+
+Run `python -m engine.preflight --input input --output output` to check existing
+deliverables. See [SUBMISSION.md](SUBMISSION.md) for packaging and outstanding
+portal details. The challenge PDF, pages 8 and 14, requires the engine, Dockerfile
+and README for stage one; the full engine-connected Express add-on, pitch and
+demo video belong to the finale. The viewer is an optional stage-one extra.
+The PDF says the submission destination/form will be announced separately. The
+older standalone FAQ differs on viewer timing; this checklist follows the PDF.
 Asset regeneration is prohibited by the explicit rules. See `RULES.md` and
 `AUDIT.md` for the full review and implementation status.

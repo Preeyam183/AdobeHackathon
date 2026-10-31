@@ -1,5 +1,30 @@
 # CHAMELEON implementation review
 
+## Submission preparation follow-up
+
+Added a compact wide-banner candidate family with a full-width fine-print footer,
+reduced control padding and additional body-copy allocation. On the supplied
+Linux Level 3 render, body text is about 8.33 px, legal text 8 px and badge/CTA
+labels about 9.02 px. The headline trades down to 11.86 px; the ribbon remains
+7.57 px. Residual readability warnings remain. No content or assets are replaced.
+
+Added a static Express viewer with original PNG previews, actual-size review,
+file pairing, text-size inspection, downloads and SDK image insertion. Adobe CLI
+build/package and browser upload/error-state checks pass. SDK insertion was
+mock-tested; a real Adobe host/account test and organizer acceptance remain open.
+The viewer has no npm runtime dependencies; Adobe CLI development dependencies
+currently have upstream security advisories. The viewer is excluded from the
+Python container. Docker explicitly defaults to VLM off. `engine.preflight`
+checks existing output pairs and reports quality warnings separately.
+
+Direct PDF review confirms that pages 8 and 14 require the engine, Dockerfile
+and README for stage one; the full engine-connected add-on, pitch and video are
+finale deliverables. The preview viewer is optional for stage one under that PDF.
+The PDF explicitly leaves the submission destination/form to a later announcement.
+
+The historical findings below describe earlier implementations. Use the current
+README and SUBMISSION.md for run instructions and remaining submission questions.
+
 ## Implementation follow-up
 
 The original findings below describe commit `26d9e43`. The working tree now
